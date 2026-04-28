@@ -3,6 +3,35 @@
 YOLO 기반 토마토 관측 시스템입니다.  
 실시간 영상에서 토마토를 검출하고(ripe/unripe), 객체 추적을 통해 개수를 집계하며, CLI 또는 Flask 웹 UI로 실행할 수 있습니다.
 
+## 폴더 구조
+
+```
+tomato-observation-system/
+├── configs/                    # 설정 파일용 디렉터리(선택)
+├── models/                     # YOLO 가중치(.pt)
+├── scripts/
+│   ├── main_tomato_observer.py # CLI 진입점
+│   └── trackers/
+│       ├── basic_bytetracker.py
+│       └── basic_sort.py
+├── src/
+│   └── tracking/
+│       ├── pipelines/          # ByteTrack/SORT·토마토 파이프라인
+│       └── utils/              # ROI, 모션 등 유틸
+├── templates/
+│   └── index.html              # Flask 웹 UI 템플릿
+├── tomato_observer_app.py      # 웹 UI 서버
+├── pyproject.toml
+├── uv.lock
+├── README.md
+├── .python-version
+├── .gitignore
+├── .project_root
+└── .cursorrules
+```
+
+`uv sync` 후에는 프로젝트 루트에 `.venv`가 생기며, 실행 시 `__pycache__`가 생성될 수 있습니다.
+
 ## 주요 기능
 
 - 실시간 입력 처리: 웹캠/비디오(OpenCV), ZED(옵션)
@@ -41,7 +70,7 @@ uv run python --version
 ### 1) CLI 실행
 
 ```bash
-uv run python scripts/main_tomato_observer.py
+python scripts/main_tomato_observer.py
 ```
 
 기본 실행 설정은 `scripts/main_tomato_observer.py`의 `CONFIG`에서 조정합니다.
@@ -49,7 +78,7 @@ uv run python scripts/main_tomato_observer.py
 ### 2) 웹 UI 실행
 
 ```bash
-uv run python tomato_observer_app.py
+python tomato_observer_app.py
 ```
 
 실행 후 브라우저에서 Flask 서버 주소(기본 localhost)로 접속하여 카메라 시작/중지 및 임계값을 제어합니다.
