@@ -1,0 +1,66 @@
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dylib
+*.egg
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+wheels/
+site/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter / notebooks
+.ipynb_checkpoints/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project runtime outputs
+outputs/
+logs/
+checkpoints/
+reports/
+predictions/
+tmp/
+temp/
+
+# Local model weights / large binaries
+models/
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Media / recording outputs
+*.mp4
+*.avi
+*.mov
+
+# Local environment files
+.env
+.env.*
+
+# Cursor local rules
+.cursorrules
