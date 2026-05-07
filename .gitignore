@@ -46,12 +46,6 @@ predictions/
 tmp/
 temp/
 
-# Local model weights / large binaries
-models/
-*.pt
-*.pth
-*.onnx
-*.engine
 
 # Media / recording outputs
 *.mp4
