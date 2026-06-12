@@ -43,7 +43,7 @@ DEFAULT_CONFIG = {
     # This camera stream is expected to be side-by-side; force stable capture mode.
     "camera_width": 2560,
     "camera_height": 720,
-    "model_path": "models/yolo26n_640.pt",
+    "model_path": "yolo26n_640.pt",
     "device": "0",
     "show_window": True,
     "output_path": None,
@@ -100,6 +100,10 @@ def _resolve_model_path(model_path: str) -> str:
     if p.exists():
         return str(p)
     if Path(model_path).exists():
+        return model_path
+    # Allow Ultralytics built-in model names (e.g. "yolo11n.pt"):
+    # YOLO() can auto-download these weights if they are not local files.
+    if "/" not in model_path and "\\" not in model_path and model_path.endswith(".pt"):
         return model_path
     candidates = sorted((REPO_ROOT / "models").glob("*.pt")) if (REPO_ROOT / "models").exists() else []
     if candidates:
@@ -285,11 +289,15 @@ def _tracked_to_csv_rows(
         area = bw * bh
         cid = int(tracked.class_id[i])
         cls_key = CLASS_NAMES.get(cid, str(cid))
+        tid_val: int | str = ""
+        if tids is not None:
+            tid_val = int(tids[i])
         rows.append(
             {
                 "timestamp": timestamp,
                 "elapsed": elapsed,
                 "frame_index": frame_idx,
+                "id": tid_val,
                 "ripeness": str(cls_key).lower(),
                 "score": round(float(tracked.confidence[i]), 4),
                 "x1": xi1,
@@ -348,13 +356,12 @@ def run(config: dict) -> None:
     proc_h = src_h
 
     trackers = {cid: _make_tracker(config, fps) for cid in CLASS_NAMES}
-    raw_to_stable: Dict[int, Dict[int, int]] = {cid: {} for cid in CLASS_NAMES}
-    next_sid: Dict[int, int] = {cid: 1 for cid in CLASS_NAMES}
+    raw_to_stable: Dict[tuple[int, int], int] = {}
+    next_sid = 1
     seen_ids: Dict[int, set] = {cid: set() for cid in CLASS_NAMES}
 
     writer = _make_writer(config.get("output_path"), proc_w, proc_h, fps)
-    box_annotator = sv.BoxAnnotator()
-    label_annotator = sv.LabelAnnotator()
+    dynamic_output = not bool(config.get("output_path"))
     trace_annotator = sv.TraceAnnotator(trace_length=int(config.get("trace_length", 30)))
     show_trace = bool(config.get("show_trace", False))
 
@@ -413,15 +420,26 @@ def run(config: dict) -> None:
 
             infer_conf = float(config["conf"])
             infer_iou = float(config["nms_iou"])
+            show_trace_now = bool(show_trace)
+            recording_now = False
+            recording_video_relpath: Optional[str] = None
             if runtime is not None:
                 lock = runtime.get("lock")
                 if lock is not None:
                     with lock:
                         infer_conf = float(runtime.get("conf", infer_conf))
                         infer_iou = float(runtime.get("nms_iou", infer_iou))
+                        show_trace_now = bool(runtime.get("show_trace", show_trace_now))
+                        recording_now = bool(runtime.get("recording", False))
+                        rp = runtime.get("recording_video_relpath")
+                        recording_video_relpath = str(rp) if rp else None
                 else:
                     infer_conf = float(runtime.get("conf", infer_conf))
                     infer_iou = float(runtime.get("nms_iou", infer_iou))
+                    show_trace_now = bool(runtime.get("show_trace", show_trace_now))
+                    recording_now = bool(runtime.get("recording", False))
+                    rp = runtime.get("recording_video_relpath")
+                    recording_video_relpath = str(rp) if rp else None
 
             h, w = frame.shape[:2]
             if bool(config.get("stereo_sbs", True)):
@@ -478,17 +496,20 @@ def run(config: dict) -> None:
                 if len(valid) == 0:
                     continue
 
-                new_idx = [i for i, rid in enumerate(valid.tracker_id) if int(rid) not in raw_to_stable[cid]]
+                new_idx = [i for i, rid in enumerate(valid.tracker_id) if (cid, int(rid)) not in raw_to_stable]
                 new_idx.sort(
                     key=lambda i: (
                         0.5 * (valid.xyxy[i][1] + valid.xyxy[i][3]) - 0.5 * (valid.xyxy[i][0] + valid.xyxy[i][2])
                     )
                 )
                 for i in new_idx:
-                    raw_to_stable[cid][int(valid.tracker_id[i])] = next_sid[cid]
-                    next_sid[cid] += 1
+                    raw_to_stable[(cid, int(valid.tracker_id[i]))] = next_sid
+                    next_sid += 1
 
-                valid.tracker_id = np.array([raw_to_stable[cid][int(rid)] for rid in valid.tracker_id], dtype=np.int64)
+                valid.tracker_id = np.array(
+                    [raw_to_stable[(cid, int(rid))] for rid in valid.tracker_id],
+                    dtype=np.int64,
+                )
                 seen_ids[cid].update(valid.tracker_id.tolist())
                 boxes_l.append(valid.xyxy)
                 confs_l.append(valid.confidence)
@@ -506,14 +527,43 @@ def run(config: dict) -> None:
                 else sv.Detections.empty()
             )
 
-            labels = (
-                [f"{CLASS_NAMES.get(int(c), int(c))} #{tid}" for tid, c in zip(tracked.tracker_id, tracked.class_id)]
-                if tracked.tracker_id is not None
-                else []
-            )
-            annotated = box_annotator.annotate(frame_proc.copy(), detections=tracked)
-            annotated = label_annotator.annotate(annotated, detections=tracked, labels=labels)
-            if show_trace and tracked.tracker_id is not None:
+            # Enforce ROI-only display/counting even after tracker/motion steps.
+            # Without this, tracked boxes can drift outside ROI while still being shown.
+            if bool(config["use_center_roi"]) and len(tracked) > 0:
+                centers_x = 0.5 * (tracked.xyxy[:, 0] + tracked.xyxy[:, 2])
+                centers_y = 0.5 * (tracked.xyxy[:, 1] + tracked.xyxy[:, 3])
+                in_roi = (
+                    (centers_x >= roi_x1)
+                    & (centers_x <= roi_x2)
+                    & (centers_y >= roi_y1)
+                    & (centers_y <= roi_y2)
+                )
+                tracked = tracked[in_roi]
+
+            annotated = frame_proc.copy()
+            # Class color mapping: ripe=red, unripe=green (BGR).
+            class_colors: dict[int, tuple[int, int, int]] = {
+                0: (0, 0, 255),  # ripe
+                1: (0, 200, 0),  # unripe
+            }
+            if len(tracked) > 0 and tracked.tracker_id is not None:
+                for i in range(len(tracked)):
+                    x1, y1, x2, y2 = tracked.xyxy[i].astype(int).tolist()
+                    cls_id = int(tracked.class_id[i]) if tracked.class_id is not None else -1
+                    tid = int(tracked.tracker_id[i])
+                    color = class_colors.get(cls_id, (255, 255, 255))
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                    label = f"{CLASS_NAMES.get(cls_id, cls_id)} #{tid}"
+                    cv2.putText(
+                        annotated,
+                        label,
+                        (x1, max(y1 - 8, 18)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        color,
+                        2,
+                    )
+            if show_trace_now and tracked.tracker_id is not None:
                 annotated = trace_annotator.annotate(annotated, detections=tracked)
 
             if bool(config["use_center_roi"]):
@@ -523,9 +573,10 @@ def run(config: dict) -> None:
             total_fps = 1.0 / max(now - prev_time, 1e-8)
             prev_time = now
             cv2.putText(annotated, f"FPS: {total_fps:.2f}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+            current_frame_count = int(len(tracked))
             cv2.putText(
                 annotated,
-                f"ripe {len(seen_ids[0])} / unripe {len(seen_ids[1])}",
+                f"Current frame tomatoes: {current_frame_count}",
                 (20, 80),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.9,
@@ -533,8 +584,20 @@ def run(config: dict) -> None:
                 2,
             )
 
-            if writer is not None:
-                writer.write(annotated)
+            if dynamic_output:
+                if recording_now:
+                    if writer is None and recording_video_relpath:
+                        writer = _make_writer(recording_video_relpath, proc_w, proc_h, fps)
+                    if writer is not None:
+                        writer.write(annotated)
+                else:
+                    if writer is not None:
+                        writer.release()
+                        writer = None
+            else:
+                if writer is not None:
+                    writer.write(annotated)
+
             if bool(config["show_window"]):
                 cv2.imshow(f"Tomato Observer ({tracker_type.upper()})", annotated)
                 key = cv2.waitKey(1) & 0xFF
@@ -545,17 +608,19 @@ def run(config: dict) -> None:
                 elapsed_s = config.get("session_elapsed_fn")
                 elapsed_str = elapsed_s() if callable(elapsed_s) else "00:00:00"
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                csv_part = _tracked_to_csv_rows(
-                    tracked,
-                    frame_idx=frame_idx,
-                    fps=total_fps,
-                    conf_thres=infer_conf,
-                    iou_thres=infer_iou,
-                    timestamp=ts,
-                    elapsed=elapsed_str,
+                csv_part = (
+                    _tracked_to_csv_rows(
+                        tracked,
+                        frame_idx=frame_idx,
+                        fps=total_fps,
+                        conf_thres=infer_conf,
+                        iou_thres=infer_iou,
+                        timestamp=ts,
+                        elapsed=elapsed_str,
+                    )
+                    if (recording_now if dynamic_output else True)
+                    else []
                 )
-                ripe_n = sum(1 for r in csv_part if r["ripeness"] == "ripe")
-                unripe_n = sum(1 for r in csv_part if r["ripeness"] == "unripe")
                 on_frame(
                     annotated,
                     {
@@ -564,9 +629,12 @@ def run(config: dict) -> None:
                         "width": proc_w,
                         "height": proc_h,
                         "csv_rows": csv_part,
-                        "ripe_count": ripe_n,
-                        "unripe_count": unripe_n,
-                        "total_count": len(csv_part),
+                        "ripe_count": len(seen_ids[0]),
+                        "unripe_count": len(seen_ids[1]),
+                        "ripe_ids": sorted(int(x) for x in seen_ids[0]),
+                        "unripe_ids": sorted(int(x) for x in seen_ids[1]),
+                        "current_frame_count": int(len(tracked)),
+                        "total_count": len(seen_ids[0]) + len(seen_ids[1]),
                     },
                 )
     finally:
