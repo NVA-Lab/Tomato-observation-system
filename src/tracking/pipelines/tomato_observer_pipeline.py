@@ -51,6 +51,11 @@ DEFAULT_CONFIG = {
     "stereo_sbs": True,
     "left_only": True,
     "use_center_roi": True,
+    # False (default): only tracker-confirmed detections (stable tracker_id >= 0) are drawn/logged.
+    # True: every YOLO detection is drawn/logged even before the tracker confirms a stable id
+    # (id is left blank for those) — useful for data collection where recall matters more than
+    # per-object identity, e.g. dense/occluded clusters where tracks rarely get confirmed.
+    "use_raw_detections": False,
     "roi_width_ratio": 0.7,
     "roi_height_ratio": 1.0,
     "conf": 0.5,
@@ -135,6 +140,7 @@ class _ZedCapture:
             raise RuntimeError(f"ZED open failed: {err}")
         self._image = sl.Mat()
         self._runtime = sl.RuntimeParameters()
+        self._svo_active = False
 
     def read(self) -> tuple[bool, Optional[np.ndarray]]:
         if self.zed.grab(self._runtime) != self._sl.ERROR_CODE.SUCCESS:
@@ -144,7 +150,32 @@ class _ZedCapture:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         return True, frame
 
+    def start_svo_recording(self, svo_path: str) -> bool:
+        """Begin writing raw stereo frames (both eyes + calibration) to an SVO file.
+
+        Depth is intentionally left off live (see DEPTH_MODE.NONE above); the SVO
+        preserves everything needed to compute depth later by replaying it through
+        the ZED SDK with depth_mode enabled.
+        """
+        if self._svo_active:
+            return True
+        Path(svo_path).parent.mkdir(parents=True, exist_ok=True)
+        rec_params = self._sl.RecordingParameters(svo_path, self._sl.SVO_COMPRESSION_MODE.H264)
+        err = self.zed.enable_recording(rec_params)
+        if err != self._sl.ERROR_CODE.SUCCESS:
+            print(f"[TomatoObserver] SVO recording failed to start ({svo_path}): {err}")
+            return False
+        self._svo_active = True
+        return True
+
+    def stop_svo_recording(self) -> None:
+        if not self._svo_active:
+            return
+        self.zed.disable_recording()
+        self._svo_active = False
+
     def release(self) -> None:
+        self.stop_svo_recording()
         self.zed.close()
 
     def get_fps(self) -> float:
@@ -275,14 +306,13 @@ def _tracked_to_csv_rows(
     iou_thres: float,
     timestamp: str,
     elapsed: str,
+    svo_frame_idx: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if tracked.class_id is None or len(tracked) == 0:
         return rows
     tids = tracked.tracker_id
     for i in range(len(tracked)):
-        if tids is not None and int(tids[i]) < 0:
-            continue
         x1, y1, x2, y2 = (float(tracked.xyxy[i][j]) for j in range(4))
         xi1, yi1, xi2, yi2 = int(x1), int(y1), int(x2), int(y2)
         bw, bh = xi2 - xi1, yi2 - yi1
@@ -290,16 +320,17 @@ def _tracked_to_csv_rows(
         cid = int(tracked.class_id[i])
         cls_key = CLASS_NAMES.get(cid, str(cid))
         tid_val: int | str = ""
-        if tids is not None:
+        if tids is not None and int(tids[i]) >= 0:
             tid_val = int(tids[i])
         rows.append(
             {
                 "timestamp": timestamp,
                 "elapsed": elapsed,
                 "frame_index": frame_idx,
+                "svo_frame_index": svo_frame_idx if svo_frame_idx is not None else "",
                 "id": tid_val,
                 "ripeness": str(cls_key).lower(),
-                "score": round(float(tracked.confidence[i]), 4),
+                "confidence": round(float(tracked.confidence[i]), 4),
                 "x1": xi1,
                 "y1": yi1,
                 "x2": xi2,
@@ -362,6 +393,8 @@ def run(config: dict) -> None:
 
     writer = _make_writer(config.get("output_path"), proc_w, proc_h, fps)
     dynamic_output = not bool(config.get("output_path"))
+    svo_path_active: Optional[str] = None
+    svo_rec_frame_idx: Optional[int] = None
     trace_annotator = sv.TraceAnnotator(trace_length=int(config.get("trace_length", 30)))
     show_trace = bool(config.get("show_trace", False))
 
@@ -421,6 +454,8 @@ def run(config: dict) -> None:
             infer_conf = float(config["conf"])
             infer_iou = float(config["nms_iou"])
             show_trace_now = bool(show_trace)
+            use_center_roi_now = bool(config["use_center_roi"])
+            use_raw_detections_now = bool(config.get("use_raw_detections", False))
             recording_now = False
             recording_video_relpath: Optional[str] = None
             if runtime is not None:
@@ -430,6 +465,8 @@ def run(config: dict) -> None:
                         infer_conf = float(runtime.get("conf", infer_conf))
                         infer_iou = float(runtime.get("nms_iou", infer_iou))
                         show_trace_now = bool(runtime.get("show_trace", show_trace_now))
+                        use_center_roi_now = bool(runtime.get("use_center_roi", use_center_roi_now))
+                        use_raw_detections_now = bool(runtime.get("use_raw_detections", use_raw_detections_now))
                         recording_now = bool(runtime.get("recording", False))
                         rp = runtime.get("recording_video_relpath")
                         recording_video_relpath = str(rp) if rp else None
@@ -437,6 +474,8 @@ def run(config: dict) -> None:
                     infer_conf = float(runtime.get("conf", infer_conf))
                     infer_iou = float(runtime.get("nms_iou", infer_iou))
                     show_trace_now = bool(runtime.get("show_trace", show_trace_now))
+                    use_center_roi_now = bool(runtime.get("use_center_roi", use_center_roi_now))
+                    use_raw_detections_now = bool(runtime.get("use_raw_detections", use_raw_detections_now))
                     recording_now = bool(runtime.get("recording", False))
                     rp = runtime.get("recording_video_relpath")
                     recording_video_relpath = str(rp) if rp else None
@@ -461,7 +500,7 @@ def run(config: dict) -> None:
             if coord is not None and not is_reasonable_motion_transform(coord, proc_w, proc_h):
                 coord = IdentityTransformation()
 
-            if bool(config["use_center_roi"]):
+            if use_center_roi_now:
                 roi_x1, roi_y1, roi_x2, roi_y2 = compute_center_roi_by_ratio(
                     frame_proc.shape[:2], float(config["roi_width_ratio"]), float(config["roi_height_ratio"])
                 )
@@ -492,11 +531,16 @@ def run(config: dict) -> None:
                 if cls_dets.tracker_id is None or len(cls_dets) == 0:
                     continue
 
-                valid = cls_dets[cls_dets.tracker_id >= 0]
+                valid = cls_dets if use_raw_detections_now else cls_dets[cls_dets.tracker_id >= 0]
                 if len(valid) == 0:
                     continue
 
-                new_idx = [i for i, rid in enumerate(valid.tracker_id) if (cid, int(rid)) not in raw_to_stable]
+                confirmed_mask = valid.tracker_id >= 0
+                new_idx = [
+                    i
+                    for i, rid in enumerate(valid.tracker_id)
+                    if confirmed_mask[i] and (cid, int(rid)) not in raw_to_stable
+                ]
                 new_idx.sort(
                     key=lambda i: (
                         0.5 * (valid.xyxy[i][1] + valid.xyxy[i][3]) - 0.5 * (valid.xyxy[i][0] + valid.xyxy[i][2])
@@ -507,10 +551,13 @@ def run(config: dict) -> None:
                     next_sid += 1
 
                 valid.tracker_id = np.array(
-                    [raw_to_stable[(cid, int(rid))] for rid in valid.tracker_id],
+                    [
+                        raw_to_stable[(cid, int(rid))] if confirmed_mask[i] else -1
+                        for i, rid in enumerate(valid.tracker_id)
+                    ],
                     dtype=np.int64,
                 )
-                seen_ids[cid].update(valid.tracker_id.tolist())
+                seen_ids[cid].update(int(x) for x in valid.tracker_id.tolist() if x >= 0)
                 boxes_l.append(valid.xyxy)
                 confs_l.append(valid.confidence)
                 cls_l.append(valid.class_id)
@@ -529,7 +576,7 @@ def run(config: dict) -> None:
 
             # Enforce ROI-only display/counting even after tracker/motion steps.
             # Without this, tracked boxes can drift outside ROI while still being shown.
-            if bool(config["use_center_roi"]) and len(tracked) > 0:
+            if use_center_roi_now and len(tracked) > 0:
                 centers_x = 0.5 * (tracked.xyxy[:, 0] + tracked.xyxy[:, 2])
                 centers_y = 0.5 * (tracked.xyxy[:, 1] + tracked.xyxy[:, 3])
                 in_roi = (
@@ -553,7 +600,7 @@ def run(config: dict) -> None:
                     tid = int(tracked.tracker_id[i])
                     color = class_colors.get(cls_id, (255, 255, 255))
                     cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                    label = f"{CLASS_NAMES.get(cls_id, cls_id)} #{tid}"
+                    label = f"{CLASS_NAMES.get(cls_id, cls_id)}" if tid < 0 else f"{CLASS_NAMES.get(cls_id, cls_id)} #{tid}"
                     cv2.putText(
                         annotated,
                         label,
@@ -564,9 +611,12 @@ def run(config: dict) -> None:
                         2,
                     )
             if show_trace_now and tracked.tracker_id is not None:
-                annotated = trace_annotator.annotate(annotated, detections=tracked)
+                # Traces need a stable identity to connect across frames; raw/unconfirmed
+                # (-1) detections would otherwise get spuriously linked to each other.
+                confirmed_for_trace = tracked[tracked.tracker_id >= 0] if use_raw_detections_now else tracked
+                annotated = trace_annotator.annotate(annotated, detections=confirmed_for_trace)
 
-            if bool(config["use_center_roi"]):
+            if use_center_roi_now:
                 cv2.rectangle(annotated, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 255, 255), 2)
 
             now = time.time()
@@ -590,10 +640,27 @@ def run(config: dict) -> None:
                         writer = _make_writer(recording_video_relpath, proc_w, proc_h, fps)
                     if writer is not None:
                         writer.write(annotated)
+                    if zed_cap is not None and recording_video_relpath:
+                        if svo_path_active is None:
+                            svo_target = str(Path(recording_video_relpath).with_suffix(".svo2"))
+                            # This frame was already grabbed before enable_recording(), so it
+                            # will not land in the SVO — leave it untagged and start the
+                            # SVO-aligned counter from the next (actually recorded) frame.
+                            if zed_cap.start_svo_recording(svo_target):
+                                svo_path_active = svo_target
+                            svo_rec_frame_idx = None
+                        else:
+                            svo_rec_frame_idx = 0 if svo_rec_frame_idx is None else svo_rec_frame_idx + 1
+                    else:
+                        svo_rec_frame_idx = None
                 else:
                     if writer is not None:
                         writer.release()
                         writer = None
+                    if zed_cap is not None and svo_path_active is not None:
+                        zed_cap.stop_svo_recording()
+                        svo_path_active = None
+                    svo_rec_frame_idx = None
             else:
                 if writer is not None:
                     writer.write(annotated)
@@ -612,6 +679,7 @@ def run(config: dict) -> None:
                     _tracked_to_csv_rows(
                         tracked,
                         frame_idx=frame_idx,
+                        svo_frame_idx=svo_rec_frame_idx,
                         fps=total_fps,
                         conf_thres=infer_conf,
                         iou_thres=infer_iou,
@@ -644,6 +712,7 @@ def run(config: dict) -> None:
             exit_stats["user_stop"] = user_requested_stop
 
         if zed_cap is not None:
+            zed_cap.stop_svo_recording()
             zed_cap.release()
         elif cap is not None:
             cap.release()

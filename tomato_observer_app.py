@@ -34,7 +34,7 @@ def _resolve_export_dataset_dir() -> Path:
     raw = (os.environ.get("TOMATO_DATASET_DIR") or "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return Path("/home/user/Tomato/Dataset0514").resolve()
+    return (_REPO_ROOT / "dataset").resolve()
 
 
 EXPORT_DATASET_DIR = _resolve_export_dataset_dir()
@@ -199,6 +199,8 @@ settings_state = {
     "use_stabilization": False,
     "tracker_type": "bytetrack",
     "show_trace": False,
+    "use_center_roi": bool(DEFAULT_CONFIG.get("use_center_roi", True)),
+    "use_raw_detections": bool(DEFAULT_CONFIG.get("use_raw_detections", False)),
     "camera_mode": "zed",
     "opencv_source": 0,
 }
@@ -209,6 +211,8 @@ def _recording_status_snapshot() -> dict[str, Any]:
         ra = ui_recording_active
         csv_ok = bool(last_export_csv_rows)
         vid_ok = False
+        svo_ok = False
+        svo_abs = ""
         if last_export_video_relpath:
             vr = last_export_video_relpath
             vp = Path(vr) if Path(vr).is_absolute() else (_REPO_ROOT / vr)
@@ -216,6 +220,13 @@ def _recording_status_snapshot() -> dict[str, Any]:
                 vid_ok = vp.is_file() and vp.stat().st_size > 0
             except OSError:
                 vid_ok = False
+            svp = vp.with_suffix(".svo2")
+            try:
+                svo_ok = svp.is_file() and svp.stat().st_size > 0
+            except OSError:
+                svo_ok = False
+            if svo_ok:
+                svo_abs = str(svp.resolve())
         export_any = csv_ok or vid_ok
         stem_s = last_export_stem or ""
         ds_dir = str(EXPORT_DATASET_DIR)
@@ -226,10 +237,12 @@ def _recording_status_snapshot() -> dict[str, Any]:
         "export_ready": export_any,
         "export_csv_ready": csv_ok,
         "export_video_ready": vid_ok,
+        "export_svo_ready": svo_ok,
         "export_stem": stem_s,
         "export_dataset_dir": ds_dir,
         "export_csv_path": csv_abs,
         "export_video_path": vid_abs,
+        "export_svo_path": svo_abs,
     }
 
 
@@ -237,9 +250,10 @@ _CSV_EXPORT_FIELDNAMES = [
     "timestamp",
     "elapsed",
     "frame_index",
+    "svo_frame_index",
     "id",
     "ripeness",
-    "score",
+    "confidence",
     "x1",
     "y1",
     "x2",
@@ -350,16 +364,20 @@ latest_status: dict = {
     "use_stabilization": bool(settings_state.get("use_stabilization", False)),
     "tracker_type": str(settings_state.get("tracker_type", "bytetrack")).lower(),
     "show_trace": bool(settings_state.get("show_trace", False)),
+    "use_center_roi": bool(settings_state.get("use_center_roi", True)),
+    "use_raw_detections": bool(settings_state.get("use_raw_detections", False)),
     "camera_mode": settings_state.get("camera_mode", "zed"),
     "camera_label": _camera_mode_label(settings_state.get("camera_mode", "zed")),
     "recording_active": False,
     "export_ready": False,
     "export_csv_ready": False,
     "export_video_ready": False,
+    "export_svo_ready": False,
     "export_stem": "",
     "export_dataset_dir": str(EXPORT_DATASET_DIR),
     "export_csv_path": "",
     "export_video_path": "",
+    "export_svo_path": "",
 }
 
 
@@ -372,6 +390,8 @@ def set_idle_state(text: str = "Camera stopped\nPress the Start button") -> None
         use_stabilization = bool(settings_state.get("use_stabilization", False))
         tracker_type = str(settings_state.get("tracker_type", "bytetrack")).lower()
         show_trace = bool(settings_state.get("show_trace", False))
+        use_center_roi = bool(settings_state.get("use_center_roi", True))
+        use_raw_detections = bool(settings_state.get("use_raw_detections", False))
         cam_mode = settings_state.get("camera_mode", "zed")
 
     with frame_lock:
@@ -393,16 +413,20 @@ def set_idle_state(text: str = "Camera stopped\nPress the Start button") -> None
             "use_stabilization": use_stabilization,
             "tracker_type": tracker_type,
             "show_trace": show_trace,
+            "use_center_roi": use_center_roi,
+            "use_raw_detections": use_raw_detections,
             "camera_mode": cam_mode,
             "camera_label": _camera_mode_label(cam_mode),
             "recording_active": rec["recording_active"],
             "export_ready": rec["export_ready"],
             "export_csv_ready": rec["export_csv_ready"],
             "export_video_ready": rec["export_video_ready"],
+            "export_svo_ready": rec["export_svo_ready"],
             "export_stem": rec["export_stem"],
             "export_dataset_dir": rec["export_dataset_dir"],
             "export_csv_path": rec["export_csv_path"],
             "export_video_path": rec["export_video_path"],
+            "export_svo_path": rec["export_svo_path"],
         }
 
 
@@ -443,16 +467,20 @@ def _on_frame(annotated: np.ndarray, meta: dict) -> None:
             "use_stabilization": bool(settings_state.get("use_stabilization", False)),
             "tracker_type": str(settings_state.get("tracker_type", "bytetrack")).lower(),
             "show_trace": bool(settings_state.get("show_trace", False)),
+            "use_center_roi": bool(settings_state.get("use_center_roi", True)),
+            "use_raw_detections": bool(settings_state.get("use_raw_detections", False)),
             "camera_mode": settings_state.get("camera_mode", "zed"),
             "camera_label": _camera_mode_label(settings_state.get("camera_mode", "zed")),
             "recording_active": rec["recording_active"],
             "export_ready": rec["export_ready"],
             "export_csv_ready": rec["export_csv_ready"],
             "export_video_ready": rec["export_video_ready"],
+            "export_svo_ready": rec["export_svo_ready"],
             "export_stem": rec["export_stem"],
             "export_dataset_dir": rec["export_dataset_dir"],
             "export_csv_path": rec["export_csv_path"],
             "export_video_path": rec["export_video_path"],
+            "export_svo_path": rec["export_svo_path"],
         }
 
     rows = meta.get("csv_rows") or []
@@ -499,6 +527,8 @@ def start_camera() -> tuple[bool, str]:
             if tracker_type not in VALID_TRACKER_TYPES:
                 tracker_type = "bytetrack"
             show_trace = bool(settings_state.get("show_trace", False))
+            use_center_roi = bool(settings_state.get("use_center_roi", True))
+            use_raw_detections = bool(settings_state.get("use_raw_detections", False))
 
         stop_event.clear()
         session_start_time = time.time()
@@ -514,6 +544,8 @@ def start_camera() -> tuple[bool, str]:
             "conf": conf_thres,
             "nms_iou": iou_thres,
             "show_trace": show_trace,
+            "use_center_roi": use_center_roi,
+            "use_raw_detections": use_raw_detections,
             "recording": False,
             "recording_video_relpath": None,
         }
@@ -535,6 +567,8 @@ def start_camera() -> tuple[bool, str]:
                 "nms_iou": iou_thres,
                 "use_stabilization": use_stabilization,
                 "show_trace": show_trace,
+                "use_center_roi": use_center_roi,
+                "use_raw_detections": use_raw_detections,
                 "motion_compensation": True,
             }
         )
@@ -746,10 +780,12 @@ def api_recording_start():
         latest_status["export_ready"] = rec["export_ready"]
         latest_status["export_csv_ready"] = rec["export_csv_ready"]
         latest_status["export_video_ready"] = rec["export_video_ready"]
+        latest_status["export_svo_ready"] = rec["export_svo_ready"]
         latest_status["export_stem"] = rec["export_stem"]
         latest_status["export_dataset_dir"] = rec["export_dataset_dir"]
         latest_status["export_csv_path"] = rec["export_csv_path"]
         latest_status["export_video_path"] = rec["export_video_path"]
+        latest_status["export_svo_path"] = rec["export_svo_path"]
 
     return jsonify(
         {
@@ -785,17 +821,24 @@ def api_recording_stop():
         latest_status["export_ready"] = rec["export_ready"]
         latest_status["export_csv_ready"] = rec["export_csv_ready"]
         latest_status["export_video_ready"] = rec["export_video_ready"]
+        latest_status["export_svo_ready"] = rec["export_svo_ready"]
         latest_status["export_stem"] = rec["export_stem"]
         latest_status["export_dataset_dir"] = rec["export_dataset_dir"]
         latest_status["export_csv_path"] = rec["export_csv_path"]
         latest_status["export_video_path"] = rec["export_video_path"]
+        latest_status["export_svo_path"] = rec["export_svo_path"]
 
     return jsonify(
         {
             "ok": True,
-            "message": "녹화를 종료했습니다. CSV·MP4는 서버 폴더에 저장되었습니다. (브라우저 다운로드 아님)",
+            "message": (
+                "녹화를 종료했습니다. CSV·MP4·SVO는 서버 폴더에 저장되었습니다. (브라우저 다운로드 아님)"
+                if rec["export_svo_ready"]
+                else "녹화를 종료했습니다. CSV·MP4는 서버 폴더에 저장되었습니다. (브라우저 다운로드 아님)"
+            ),
             "saved_csv_path": rec["export_csv_path"],
             "saved_video_path": rec["export_video_path"],
+            "saved_svo_path": rec["export_svo_path"],
             "export_dataset_dir": rec["export_dataset_dir"],
         }
     )
@@ -848,6 +891,18 @@ def api_settings():
     else:
         show_trace = str(raw_trace).strip().lower() in {"1", "true", "on", "yes"}
 
+    raw_roi = data.get("use_center_roi", settings_state.get("use_center_roi", True))
+    if isinstance(raw_roi, bool):
+        use_center_roi = raw_roi
+    else:
+        use_center_roi = str(raw_roi).strip().lower() in {"1", "true", "on", "yes"}
+
+    raw_detections = data.get("use_raw_detections", settings_state.get("use_raw_detections", False))
+    if isinstance(raw_detections, bool):
+        use_raw_detections = raw_detections
+    else:
+        use_raw_detections = str(raw_detections).strip().lower() in {"1", "true", "on", "yes"}
+
     with state_lock:
         prev_use_stabilization = bool(settings_state.get("use_stabilization", False))
         prev_tracker_type = str(settings_state.get("tracker_type", "bytetrack")).lower()
@@ -856,6 +911,8 @@ def api_settings():
         settings_state["use_stabilization"] = bool(use_stabilization)
         settings_state["tracker_type"] = tracker_type
         settings_state["show_trace"] = bool(show_trace)
+        settings_state["use_center_roi"] = bool(use_center_roi)
+        settings_state["use_raw_detections"] = bool(use_raw_detections)
 
     pr = pipeline_runtime
     if pr is not None:
@@ -865,10 +922,14 @@ def api_settings():
                 pr["conf"] = float(settings_state["conf_thres"])
                 pr["nms_iou"] = float(settings_state["iou_thres"])
                 pr["show_trace"] = bool(show_trace)
+                pr["use_center_roi"] = bool(use_center_roi)
+                pr["use_raw_detections"] = bool(use_raw_detections)
         else:
             pr["conf"] = float(settings_state["conf_thres"])
             pr["nms_iou"] = float(settings_state["iou_thres"])
             pr["show_trace"] = bool(show_trace)
+            pr["use_center_roi"] = bool(use_center_roi)
+            pr["use_raw_detections"] = bool(use_raw_detections)
 
     rec = _recording_status_snapshot()
     with frame_lock:
@@ -877,14 +938,18 @@ def api_settings():
         latest_status["use_stabilization"] = bool(use_stabilization)
         latest_status["tracker_type"] = tracker_type
         latest_status["show_trace"] = bool(show_trace)
+        latest_status["use_center_roi"] = bool(use_center_roi)
+        latest_status["use_raw_detections"] = bool(use_raw_detections)
         latest_status["recording_active"] = rec["recording_active"]
         latest_status["export_ready"] = rec["export_ready"]
         latest_status["export_csv_ready"] = rec["export_csv_ready"]
         latest_status["export_video_ready"] = rec["export_video_ready"]
+        latest_status["export_svo_ready"] = rec["export_svo_ready"]
         latest_status["export_stem"] = rec["export_stem"]
         latest_status["export_dataset_dir"] = rec["export_dataset_dir"]
         latest_status["export_csv_path"] = rec["export_csv_path"]
         latest_status["export_video_path"] = rec["export_video_path"]
+        latest_status["export_svo_path"] = rec["export_svo_path"]
 
     need_restart = prev_use_stabilization != bool(use_stabilization) or prev_tracker_type != tracker_type
     restart_applied = False
@@ -915,6 +980,8 @@ def api_settings():
             "use_stabilization": bool(use_stabilization),
             "tracker_type": tracker_type,
             "show_trace": bool(show_trace),
+            "use_center_roi": bool(use_center_roi),
+            "use_raw_detections": bool(use_raw_detections),
             "message": restart_message,
         }
     )

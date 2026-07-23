@@ -564,6 +564,24 @@
                 <option value="on">ON</option>
               </select>
             </div>
+            <div class="setting-row" style="margin-top: 10px; margin-bottom: 0;">
+              <div class="setting-head">
+                <span>중앙 ROI 제한</span>
+              </div>
+              <select id="center-roi-toggle" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #ccc;">
+                <option value="on">ON</option>
+                <option value="off">OFF</option>
+              </select>
+            </div>
+            <div class="setting-row" style="margin-top: 10px; margin-bottom: 0;">
+              <div class="setting-head">
+                <span>미확정 검출 표시 (raw detections)</span>
+              </div>
+              <select id="raw-detections-toggle" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid #ccc;">
+                <option value="off">OFF</option>
+                <option value="on">ON</option>
+              </select>
+            </div>
             <button class="save-btn" id="save-btn" style="margin-top: 10px;">설정 저장</button>
             <div class="save-message" id="save-message"></div>
           </div>
@@ -658,6 +676,13 @@
     let selectedIdGroup = "ripe";
     let latestRipeIds = [];
     let latestUnripeIds = [];
+    let pendingConf = null;
+    let pendingIou = null;
+    let pendingStabilization = null;
+    let pendingTrackerType = null;
+    let pendingShowTrace = null;
+    let pendingUseCenterRoi = null;
+    let pendingUseRawDetections = null;
 
     async function postAction(url, body) {
       try {
@@ -826,28 +851,36 @@
       const stabToggle = document.getElementById("stabilization-toggle");
       const trackerSel = document.getElementById("tracker-type");
       const traceToggle = document.getElementById("show-trace-toggle");
+      const roiToggle = document.getElementById("center-roi-toggle");
+      const rawDetToggle = document.getElementById("raw-detections-toggle");
 
-      if (document.activeElement !== confSlider) {
+      if (pendingConf === null && document.activeElement !== confSlider) {
         confSlider.value = data.conf_thres;
       }
 
-      if (document.activeElement !== iouSlider) {
+      if (pendingIou === null && document.activeElement !== iouSlider) {
         iouSlider.value = data.iou_thres;
       }
 
       document.getElementById("conf-value").textContent = Number(confSlider.value).toFixed(2);
       document.getElementById("iou-value").textContent = Number(iouSlider.value).toFixed(2);
-      if (stabToggle && document.activeElement !== stabToggle) {
+      if (stabToggle && pendingStabilization === null && document.activeElement !== stabToggle) {
         stabToggle.value = data.use_stabilization ? "on" : "off";
       }
-      if (trackerSel && document.activeElement !== trackerSel && data.tracker_type) {
+      if (trackerSel && pendingTrackerType === null && document.activeElement !== trackerSel && data.tracker_type) {
         const allowedT = ["bytetrack", "sort"];
         if (allowedT.indexOf(data.tracker_type) >= 0) {
           trackerSel.value = data.tracker_type;
         }
       }
-      if (traceToggle && document.activeElement !== traceToggle) {
+      if (traceToggle && pendingShowTrace === null && document.activeElement !== traceToggle) {
         traceToggle.value = data.show_trace ? "on" : "off";
+      }
+      if (roiToggle && pendingUseCenterRoi === null && document.activeElement !== roiToggle) {
+        roiToggle.value = data.use_center_roi ? "on" : "off";
+      }
+      if (rawDetToggle && pendingUseRawDetections === null && document.activeElement !== rawDetToggle) {
+        rawDetToggle.value = data.use_raw_detections ? "on" : "off";
       }
     }
 
@@ -893,11 +926,23 @@
     }
 
     async function saveSettings() {
-      const conf = Number(document.getElementById("conf-slider").value);
-      const iou = Number(document.getElementById("iou-slider").value);
-      const stabilization = document.getElementById("stabilization-toggle").value === "on";
-      const tracker_type = document.getElementById("tracker-type").value;
-      const show_trace = document.getElementById("show-trace-toggle").value === "on";
+      const conf = pendingConf !== null ? pendingConf : Number(document.getElementById("conf-slider").value);
+      const iou = pendingIou !== null ? pendingIou : Number(document.getElementById("iou-slider").value);
+      const stabilization = pendingStabilization !== null
+        ? pendingStabilization
+        : document.getElementById("stabilization-toggle").value === "on";
+      const tracker_type = pendingTrackerType !== null
+        ? pendingTrackerType
+        : document.getElementById("tracker-type").value;
+      const show_trace = pendingShowTrace !== null
+        ? pendingShowTrace
+        : document.getElementById("show-trace-toggle").value === "on";
+      const use_center_roi = pendingUseCenterRoi !== null
+        ? pendingUseCenterRoi
+        : document.getElementById("center-roi-toggle").value === "on";
+      const use_raw_detections = pendingUseRawDetections !== null
+        ? pendingUseRawDetections
+        : document.getElementById("raw-detections-toggle").value === "on";
       const saveMessage = document.getElementById("save-message");
 
       try {
@@ -911,7 +956,9 @@
             iou_thres: iou,
             use_stabilization: stabilization,
             tracker_type: tracker_type,
-            show_trace: show_trace
+            show_trace: show_trace,
+            use_center_roi: use_center_roi,
+            use_raw_detections: use_raw_detections
           })
         });
 
@@ -925,6 +972,13 @@
 
         saveMessage.textContent = data.message || "설정이 저장되었습니다.";
         saveMessage.style.color = "#1f9d41";
+        pendingConf = null;
+        pendingIou = null;
+        pendingStabilization = null;
+        pendingTrackerType = null;
+        pendingShowTrace = null;
+        pendingUseCenterRoi = null;
+        pendingUseRawDetections = null;
         await updateStatus();
       } catch (e) {
         console.error(e);
@@ -1007,12 +1061,34 @@
       postRecording("/api/recording/stop");
     });
 
-    document.getElementById("conf-slider").addEventListener("input", () => {
+    document.getElementById("conf-slider").addEventListener("input", (e) => {
+      pendingConf = Number(e.target.value);
       syncSliderValue("conf-slider", "conf-value");
     });
 
-    document.getElementById("iou-slider").addEventListener("input", () => {
+    document.getElementById("iou-slider").addEventListener("input", (e) => {
+      pendingIou = Number(e.target.value);
       syncSliderValue("iou-slider", "iou-value");
+    });
+
+    document.getElementById("stabilization-toggle").addEventListener("change", (e) => {
+      pendingStabilization = e.target.value === "on";
+    });
+
+    document.getElementById("tracker-type").addEventListener("change", (e) => {
+      pendingTrackerType = e.target.value;
+    });
+
+    document.getElementById("show-trace-toggle").addEventListener("change", (e) => {
+      pendingShowTrace = e.target.value === "on";
+    });
+
+    document.getElementById("center-roi-toggle").addEventListener("change", (e) => {
+      pendingUseCenterRoi = e.target.value === "on";
+    });
+
+    document.getElementById("raw-detections-toggle").addEventListener("change", (e) => {
+      pendingUseRawDetections = e.target.value === "on";
     });
 
     setInterval(updateStatus, 500);
