@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Run the same tomato observer pipeline (YOLO + tracking + CSV) on a video file.
+"""Run the tomato observer pipeline (YOLO + tracking + CSV) on a live camera OR a video file.
 
-Mirrors the web app (`app.py`) defaults and tunable settings, without Flask or a live camera.
+Same pipeline/settings as the web app (`tomato_observer_app.py`), without Flask. The `source`
+argument decides the input: an integer is a webcam index (live), anything else is a video path.
 Writes detection CSV (and optionally an annotated MP4) to the export directory.
 
 Example:
-  uv run python scripts/tomato_observer_video.py /path/to/input.mp4 --write-video
-  uv run python scripts/tomato_observer_video.py clip.mp4 --conf 0.75 --tracker sort --mode sbs_left
+  scripts/tomato_observer.sh 0 --show-window                 # live webcam (index 0)
+  scripts/tomato_observer.sh clip.mp4 --write-video          # video file
+  python3 -m src.tracking.tomato_observer clip.mp4 --conf 0.75 --tracker sort --mode sbs_left
 """
 
 from __future__ import annotations
@@ -17,17 +19,15 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import pyrootutils
 import torch
 from ultralytics import YOLO
 
-pyrootutils.setup_root(__file__, indicator=".project_root", pythonpath=True)
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# Run as a module from the repo root (`python -m src.tracking.tomato_observer`),
+# so `src` is importable without pyrootutils path setup.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from src.tracking.pipelines.tomato_observer_pipeline import DEFAULT_CONFIG, run as run_observer
 
@@ -127,10 +127,10 @@ def parse_args() -> argparse.Namespace:
     d_conf = 0.8
     d_iou = 0.25
     p = argparse.ArgumentParser(
-        description="Tomato observer on a video file (same pipeline as the web app).",
+        description="Tomato observer on a live webcam or a video file (same pipeline as the web app).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("video", type=Path, help="Input video file path")
+    p.add_argument("source", help="Webcam index (e.g. 0) for a live camera, or a video file path")
     p.add_argument("--conf", type=float, default=d_conf, help="YOLO confidence threshold")
     p.add_argument("--iou", type=float, default=d_iou, help="NMS IoU threshold")
     p.add_argument(
@@ -177,7 +177,7 @@ def parse_args() -> argparse.Namespace:
         "--stem",
         type=str,
         default="",
-        help="Output file basename without extension (default: input video stem)",
+        help="Output file basename without extension (default: video stem, or camN for a webcam)",
     )
     p.add_argument(
         "--write-video",
@@ -195,17 +195,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    video_path = args.video.expanduser().resolve()
-    if not video_path.is_file():
-        print(f"Video not found: {video_path}", file=sys.stderr)
-        sys.exit(1)
+
+    # Integer source -> live webcam index; anything else -> video file path.
+    raw_source = str(args.source).strip()
+    if raw_source.lstrip("+-").isdigit():
+        source_val: object = int(raw_source)
+        default_stem = f"cam{int(raw_source)}"
+        input_label = f"webcam#{int(raw_source)}"
+    else:
+        video_path = Path(raw_source).expanduser().resolve()
+        if not video_path.is_file():
+            print(f"Video not found: {video_path}", file=sys.stderr)
+            sys.exit(1)
+        source_val = str(video_path)
+        default_stem = video_path.stem
+        input_label = str(video_path)
 
     out_dir = args.out_dir.expanduser().resolve() if args.out_dir else resolve_export_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    stem = (args.stem or "").strip() or video_path.stem
+    stem = (args.stem or "").strip() or default_stem
 
-    source_str = str(video_path)
+    source_str = source_val
     overrides = camera_overrides(args.mode)
 
     resolved_model = resolve_model_path(args.model)
@@ -264,7 +275,7 @@ def main() -> None:
     }
 
     print(
-        f"[tomato_observer_video] input={video_path}\n"
+        f"[tomato_observer] input={input_label}\n"
         f"  conf={args.conf} iou={args.iou} tracker={args.tracker} stabilization={args.stabilization}\n"
         f"  mode={args.mode} out_dir={out_dir}\n"
         f"  csv={out_dir / (stem + '.csv')}  video={'(none)' if not annotated_rel else annotated_rel}"
@@ -273,7 +284,7 @@ def main() -> None:
     try:
         run_observer(cfg)
     except KeyboardInterrupt:
-        print("\n[tomato_observer_video] interrupted", file=sys.stderr)
+        print("\n[tomato_observer] interrupted", file=sys.stderr)
         sys.exit(130)
 
     csv_path = out_dir / f"{stem}.csv"
@@ -282,16 +293,16 @@ def main() -> None:
             w = csv.DictWriter(f, fieldnames=CSV_FIELDNAMES, restval="")
             w.writeheader()
             w.writerows(csv_rows_out)
-        print(f"[tomato_observer_video] wrote CSV ({len(csv_rows_out)} rows): {csv_path}")
+        print(f"[tomato_observer] wrote CSV ({len(csv_rows_out)} rows): {csv_path}")
     else:
-        print("[tomato_observer_video] warning: no CSV rows (no tracked detections or empty video)", file=sys.stderr)
+        print("[tomato_observer] warning: no CSV rows (no tracked detections or empty video)", file=sys.stderr)
 
     if args.write_video and annotated_rel:
         ap = Path(annotated_rel)
         if ap.is_file() and ap.stat().st_size > 0:
-            print(f"[tomato_observer_video] wrote video: {ap}")
+            print(f"[tomato_observer] wrote video: {ap}")
         else:
-            print(f"[tomato_observer_video] warning: expected video missing or empty: {ap}", file=sys.stderr)
+            print(f"[tomato_observer] warning: expected video missing or empty: {ap}", file=sys.stderr)
 
 
 if __name__ == "__main__":

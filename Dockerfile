@@ -31,7 +31,6 @@ COPY scripts ./scripts
 COPY src ./src
 COPY templates ./templates
 COPY tomato_observer_app.py ./
-COPY scripts/main_tomato_observer.py scripts/main_tomato_observer.py
 
 RUN uv sync --frozen --no-install-project
 

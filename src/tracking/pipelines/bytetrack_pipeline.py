@@ -7,7 +7,7 @@ YOLO + ByteTrack 기본 트래킹
 트래커·카메라 모션 보정: Roboflow trackers — ByteTrackTracker + MotionEstimator
 (CMC, Trackers 2.2+). 검출은 보정 좌표계에서 연관되고, 출력은 다시 현재 프레임 좌표로 되돌립니다.
 
-실행 시 ``run(config)`` 에 넘기는 dict 는 ``scripts/trackers/basic_bytetracker.py`` 에서 정의합니다.
+실행 시 ``run(config)`` 에 넘기는 dict 는 ``src/tracking/basic_tracker.py`` (bytetrack) 에서 정의합니다.
 """
 
 from pathlib import Path

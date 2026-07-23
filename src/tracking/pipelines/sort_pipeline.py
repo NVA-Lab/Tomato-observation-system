@@ -8,7 +8,7 @@ YOLO + SORT 기본 트래킹  (Roboflow trackers 스타일)
 
 카메라 모션 보정(CMC): Roboflow trackers 패키지의 MotionEstimator (Trackers 2.2+; optical flow + homography).
 
-실행 시 ``run(config)`` 에 넘기는 dict 는 ``scripts/trackers/basic_sort.py`` 에서 정의합니다.
+실행 시 ``run(config)`` 에 넘기는 dict 는 ``src/tracking/basic_tracker.py`` (sort) 에서 정의합니다.
 
 SORT vs ByteTrack
   - SORT     : IoU 기반 단일 매칭, 단순·경량

@@ -22,8 +22,8 @@ re-running only re-extracts sessions that are new (see --force). The final
 {out}/annotations/annotations.json merges every session's fragment with sequential global ids.
 
 Example:
-  python3 scripts/build_training_dataset.py dataset
-  python3 scripts/build_training_dataset.py dataset --out dataset/training_dataset --force
+  scripts/postprocess_dataset.sh dataset
+  python3 -m src.dataset.build_training_dataset dataset --out dataset/training_dataset --force
 """
 
 from __future__ import annotations

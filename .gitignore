@@ -58,3 +58,6 @@ temp/
 
 # Cursor local rules
 .cursorrules
+
+# 녹화 데이터셋(대용량 svo2/mp4/csv) — 저장소에 커밋하지 않음
+/dataset

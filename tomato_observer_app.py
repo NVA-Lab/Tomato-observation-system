@@ -3,6 +3,13 @@
 Before the HTTP server starts: YOLO is loaded, GPU is warmed with one dummy `predict` (avoids
 first-frame stutter). On Start, OpenCV capture is opened in the main thread, then the worker
 reads immediately.
+
+실행 방법 (웹 UI):
+  uv run python tomato_observer_app.py                 # 기본 포트 5000 → http://127.0.0.1:5000/
+  PORT=5050 uv run python tomato_observer_app.py       # 포트 변경
+  TOMATO_NO_BROWSER=1 uv run python tomato_observer_app.py   # 브라우저 자동 실행 끄기
+  TOMATO_DATASET_DIR=/path uv run python tomato_observer_app.py  # 녹화 저장 폴더 지정
+실행 후 브라우저에서 카메라 시작/중지·임계값 조절·녹화(CSV/MP4/SVO)를 제어합니다.
 """
 
 from __future__ import annotations

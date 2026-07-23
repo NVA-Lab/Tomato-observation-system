@@ -9,13 +9,16 @@ YOLO 기반 토마토 관측 시스템입니다.
 tomato-observation-system/
 ├── configs/                    # 설정 파일용 디렉터리(선택)
 ├── models/                     # YOLO 가중치(.pt)
-├── scripts/
-│   ├── main_tomato_observer.py # CLI 진입점
-│   └── trackers/
-│       ├── basic_bytetracker.py
-│       └── basic_sort.py
+├── scripts/                    # 실행용 bash 런처(.sh)만 위치
+│   ├── tomato_observer.sh      # 라이브 카메라·비디오 파일 통합 CLI 런처
+│   ├── basic_tracker.sh        # ByteTrack/SORT 기본 트래킹 런처
+│   ├── postprocess_dataset.sh  # SVO→학습 데이터셋 빌드 런처
+│   └── setup_env.sh            # 다른 컴 환경 자동 세팅
 ├── src/
+│   ├── dataset/                # 데이터셋 빌드 로직(build_training_dataset)
 │   └── tracking/
+│       ├── tomato_observer.py  # 라이브/비디오 CLI 로직
+│       ├── basic_tracker.py    # ByteTrack/SORT CLI 로직(CONFIG)
 │       ├── pipelines/          # ByteTrack/SORT·토마토 파이프라인
 │       └── utils/              # ROI, 모션 등 유틸
 ├── templates/
@@ -65,15 +68,45 @@ uv sync
 uv run python --version
 ```
 
+## 데이터셋 후처리 (SVO → 학습 데이터)
+
+`dataset/`의 `{stem}.svo2 + {stem}.csv` 세션에서 RGB/depth/confidence + COCO 어노테이션을
+추출해 detector 학습용 데이터셋을 만듭니다. (`scripts/postprocess_dataset.sh` → `src/dataset/build_training_dataset.py`)
+
+이 작업은 `pyproject.toml` 의존성 외에 **ZED SDK + pyzed(Python API) + NVIDIA GPU/CUDA**가 추가로 필요합니다.
+`pyzed`는 pip/uv로 설치되지 않고 ZED SDK 설치 시 딸려오는 바인딩이라, `uv sync`만으로는 실행되지 않습니다.
+
+**다른 로컬 컴 세팅 (자동 스크립트)**
+
+`scripts/setup_env.sh`가 uv 설치 · `uv sync` · uv venv에 pyzed 설치 · 검증까지 자동 처리합니다.
+단, **ZED SDK 본체**는 먼저 수동 설치해야 합니다(Stereolabs 로그인 필요).
+
+```bash
+# 1) ZED SDK 5.2.x 먼저 설치: https://www.stereolabs.com/developers/release
+# 2) 환경 자동 세팅 (ZED SDK가 비표준 경로면 ZED_INSTALL_DIR로 지정)
+scripts/setup_env.sh
+#   ZED_INSTALL_DIR=/설치/경로 scripts/setup_env.sh
+
+# 3) 후처리 실행
+uv run scripts/postprocess_dataset.sh dataset --only-annotated
+```
+
+> 주의: `pyzed`는 `uv`가 쓰는 venv 파이썬에 설치돼야 합니다. `setup_env.sh`는 `uv run`으로 설치·실행하므로
+> 파이썬 버전 불일치를 자동으로 피합니다. ZED SDK 버전은 녹화에 쓴 버전(현재 5.2.3)과 맞추는 것을 권장합니다.
+
 ## 실행 방법
 
 ### 1) CLI 실행
 
+`source` 인자로 입력을 결정합니다 — 정수는 웹캠 인덱스(라이브), 그 외는 비디오 파일 경로.
+
 ```bash
-python scripts/main_tomato_observer.py
+scripts/tomato_observer.sh 0 --show-window            # 라이브 웹캠(인덱스 0)
+scripts/tomato_observer.sh clip.mp4 --write-video     # 비디오 파일 처리
 ```
 
-기본 실행 설정은 `scripts/main_tomato_observer.py`의 `CONFIG`에서 조정합니다.
+옵션(`--conf`, `--iou`, `--tracker bytetrack|sort`, `--mode full|sbs_left|sbs_right` 등)은
+`scripts/tomato_observer.sh -h`로 확인할 수 있습니다.
 
 ### 2) 웹 UI 실행
 
@@ -87,7 +120,7 @@ python tomato_observer_app.py
 
 주요 설정 위치:
 
-- `scripts/main_tomato_observer.py`의 `CONFIG`
+- `scripts/tomato_observer.sh -h`의 CLI 옵션(conf/iou/tracker/mode 등)
 - `src/tracking/pipelines/tomato_observer_pipeline.py`의 `DEFAULT_CONFIG`
 
 자주 조절하는 파라미터:
