@@ -13,8 +13,8 @@
 #   - NVIDIA 드라이버 / CUDA 설치
 #
 # 실행 방법:
-#   scripts/setup_env.sh
-#   ZED_INSTALL_DIR=/opt/zed scripts/setup_env.sh   # ZED SDK 경로 직접 지정
+#   scripts/setup.cmd                                # 래퍼 (OS 자동 감지)
+#   ZED_INSTALL_DIR=/opt/zed scripts/setup.cmd       # ZED SDK 경로 직접 지정
 
 set -euo pipefail
 
@@ -84,15 +84,28 @@ else
 
     if [[ -z "$GET_API" ]]; then
         err "ZED SDK 를 찾을 수 없습니다. pyzed 를 설치할 수 없습니다."
-        err "  1) https://www.stereolabs.com/developers/release 에서 ZED SDK 5.2.x 설치 후"
-        err "  2) 다시 실행하거나, 경로를 지정: ZED_INSTALL_DIR=/설치/경로 scripts/setup_env.sh"
+        err "  1) https://www.stereolabs.com/developers/release 에서 ZED SDK 설치 후"
+        err "  2) 다시 실행하거나, 경로를 지정: ZED_INSTALL_DIR=/설치/경로 scripts/setup.cmd"
         exit 1
     fi
 
+    ZED_ROOT="$(dirname "$GET_API")"
     log "         발견: $GET_API"
-    # get_python_api.py 는 cython/numpy 필요 -> venv 안에서 실행
-    uv run python -m pip install --quiet cython numpy
+    log "         ZED_SDK_ROOT_DIR=$ZED_ROOT"
+    export ZED_SDK_ROOT_DIR="$ZED_ROOT"
+    uv pip install cython numpy
     uv run python "$GET_API"
+    if [ $? -ne 0 ]; then
+        warn "get_python_api.py 의 자동 설치 실패 — .whl 직접 설치 시도"
+        WHL="$(ls "$REPO_ROOT"/pyzed-*.whl 2>/dev/null | head -1)"
+        if [[ -n "$WHL" ]]; then
+            log "         .whl 발견: $(basename "$WHL")"
+            uv pip install "$WHL"
+            rm -f "$WHL"
+        else
+            err "pyzed 빌드 실패 (다운로드된 .whl 도 없음)"; exit 1
+        fi
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -100,8 +113,7 @@ fi
 # ---------------------------------------------------------------------------
 log "5/5  검증"
 if uv run python -c 'import pyzed.sl as sl; print("         ZED SDK", sl.Camera().get_sdk_version())'; then
-    log "완료. 이제 아래로 실행하세요:"
-    log "    uv run scripts/postprocess_dataset.sh dataset --only-annotated"
+    log "환경 세팅 완료."
 else
     err "pyzed import 검증 실패. ZED SDK 버전과 파이썬 버전을 확인하세요."
     exit 1
