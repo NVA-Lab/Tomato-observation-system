@@ -8,7 +8,6 @@
 #   scripts/tomato_observer.sh 0 --show-window                # 웹캠 라이브
 #   scripts/tomato_observer.sh clip.mp4 --write-video         # 비디오 파일
 #   scripts/tomato_observer.sh clip.mp4 --conf 0.75 --tracker sort
-#   scripts/tomato_observer.sh -h
 # ──────────────────────────────────────────────────────────────
 
 set -euo pipefail
