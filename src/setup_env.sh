@@ -94,17 +94,27 @@ else
     log "         ZED_SDK_ROOT_DIR=$ZED_ROOT"
     export ZED_SDK_ROOT_DIR="$ZED_ROOT"
     uv pip install cython numpy
+
+    # get_python_api.py 는 pyzed 를 'python -m pip' 로 설치하려 한다. 그런데 uv 가 만든
+    # .venv 에는 pip 이 없어(uv 가 직접 패키지 관리) 이 단계는 항상 실패한다.
+    # 다행히 이 스크립트는 pip 설치를 시도하기 '전에' 알맞은 .whl 을 REPO_ROOT 로 먼저
+    # 내려받는다. 따라서 pip 실패는 무시하고, 받아진 .whl 을 uv pip 으로 직접 설치한다.
+    # (set -e 로 죽지 않도록 감싼다)
+    set +e
     uv run python "$GET_API"
-    if [ $? -ne 0 ]; then
-        warn "get_python_api.py 의 자동 설치 실패 — .whl 직접 설치 시도"
-        WHL="$(ls "$REPO_ROOT"/pyzed-*.whl 2>/dev/null | head -1)"
-        if [[ -n "$WHL" ]]; then
-            log "         .whl 발견: $(basename "$WHL")"
-            uv pip install "$WHL"
-            rm -f "$WHL"
-        else
-            err "pyzed 빌드 실패 (다운로드된 .whl 도 없음)"; exit 1
-        fi
+    set -e
+
+    WHL="$(ls "$REPO_ROOT"/pyzed-*.whl 2>/dev/null | head -1)"
+    if [[ -n "$WHL" ]]; then
+        log "         .whl 설치: $(basename "$WHL")"
+        uv pip install "$WHL"
+        rm -f "$WHL"
+    elif uv run python -c 'import pyzed.sl' >/dev/null 2>&1; then
+        log "         pyzed 설치 확인됨."
+    else
+        err "pyzed 설치 실패 (다운로드된 .whl 도 없음)."
+        err "  ZED SDK 버전과 파이썬 버전 호환을 확인하세요."
+        exit 1
     fi
 fi
 
