@@ -154,6 +154,7 @@ def _build_session_fragment(
     jpg_quality: int,
     stride: int,
     only_annotated: bool,
+    target_fps: float | None,
 ) -> dict:
     rows_by_frame, skipped = _load_rows_by_frame(csv_path)
 
@@ -190,6 +191,12 @@ def _build_session_fragment(
     unknown_ripeness: dict[str, int] = {}
     frames_skipped_by_stride = 0
 
+    # Timestamp-based FPS decimation: keep the first frame at or after each point
+    # on a fixed grid t0 + k*(1e9/target_fps) ns. Fixed grid avoids drift; the
+    # while-loop catch-up keeps it aligned across recording gaps.
+    interval_ns = int(round(1_000_000_000 / target_fps)) if target_fps else 0
+    next_target_ns: int | None = None
+
     try:
         while True:
             err = zed.grab(runtime_params)
@@ -201,8 +208,22 @@ def _build_session_fragment(
 
             pos = zed.get_svo_position()
             has_ann = bool(rows_by_frame.get(pos))
+            ts_ns = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds()
 
-            if only_annotated:
+            if target_fps:
+                # Decimate by timestamp to hit target_fps regardless of source FPS.
+                if next_target_ns is None:
+                    next_target_ns = ts_ns
+                if ts_ns < next_target_ns:
+                    frames_skipped_by_stride += 1
+                    continue
+                # Advance the grid to the first point strictly after this frame.
+                next_target_ns += interval_ns
+                if next_target_ns <= ts_ns:
+                    catch_up = (ts_ns - next_target_ns) // interval_ns + 1
+                    next_target_ns += catch_up * interval_ns
+                keep = has_ann if only_annotated else True
+            elif only_annotated:
                 keep = has_ann
             else:
                 keep = has_ann or stride <= 1 or (pos % stride == 0)
@@ -211,7 +232,6 @@ def _build_session_fragment(
                 continue
 
             frame_name = f"{stem}_{pos:06d}"
-            ts_ns = zed.get_timestamp(sl.TIME_REFERENCE.IMAGE).get_nanoseconds()
 
             zed.retrieve_image(left_mat, sl.VIEW.LEFT)
             bgra = left_mat.get_data()
@@ -386,7 +406,13 @@ def main() -> None:
         "--stride",
         type=int,
         default=1,
-        help="Keep every Nth frame that has no annotation (annotated frames are always kept regardless). Default: 1 (keep all)",
+        help="Keep every Nth frame that has no annotation (annotated frames are always kept regardless). Default: 1 (keep all). Ignored when --target-fps is set.",
+    )
+    parser.add_argument(
+        "--target-fps",
+        type=float,
+        default=None,
+        help="Decimate to this frame rate by timestamp (e.g. 6). Unlike --stride, annotated frames are NOT force-kept, so the output is a true target-fps subsample regardless of source FPS. Combine with --only-annotated to additionally drop selected frames that have no bbox.",
     )
     parser.add_argument(
         "--only-annotated",
@@ -429,6 +455,7 @@ def main() -> None:
         extract_key = {
             "stride": args.stride,
             "only_annotated": args.only_annotated,
+            "target_fps": args.target_fps,
             "depth_mode": args.depth_mode,
             "jpg_quality": args.jpg_quality,
         }
@@ -444,7 +471,7 @@ def main() -> None:
 
         fragment = _build_session_fragment(
             sl, svo_path, csv_path, stem, out_dir, args.depth_mode, args.jpg_quality,
-            args.stride, args.only_annotated,
+            args.stride, args.only_annotated, args.target_fps,
         )
         fragment["_extract_key"] = extract_key
         frag_path.write_text(json.dumps(fragment), encoding="utf-8")
